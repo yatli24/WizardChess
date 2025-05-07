@@ -3,6 +3,8 @@ using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using System;
+using System.Collections;
+
 
 
 
@@ -29,6 +31,7 @@ public class Chessboard : MonoBehaviour
     [SerializeField] private Material whiteMaterial;
     [SerializeField] private Material blackMaterial;
     [SerializeField] private Material freezeHighlightMaterial;
+    [SerializeField] private Material rainMaterial;
     private List<Vector2Int> previousFreezePreview = new();
     [SerializeField] private float tileSize = 0.6f;
     [SerializeField] private float yOffset = 0.6f;
@@ -37,6 +40,14 @@ public class Chessboard : MonoBehaviour
     [SerializeField] private float deathSpacing = 0.2f;
     [SerializeField] private float dragOffset = 0.45f;
     [SerializeField] private GameObject victoryScreen;
+    [SerializeField] private GameObject whiteWinsPanel;
+    [SerializeField] private GameObject blackWinsPanel;
+
+    [Header("Camera Stuff")]
+    public Transform whiteCameraPosition;
+    public Transform blackCameraPosition;
+    public Camera mainCamera;
+    public float cameraTransitionDuration = 2.0f; // lower is slower animation transition
 
 
     [Header("Prefabs & Materials")]
@@ -44,7 +55,7 @@ public class Chessboard : MonoBehaviour
     public GameObject[] blackPrefabs;
     [SerializeField] private Material[] teamMaterials;
 
-    // LOGIC
+    // Regular Game LOGIC
     private ChessPiece[,] chessPieces;
     private ChessPiece currentlyDragging;
     private List<ChessPiece> deadWhites = new List<ChessPiece>();
@@ -59,21 +70,33 @@ public class Chessboard : MonoBehaviour
     public bool isWhiteTurn;
     private List<Vector2Int[]> moveList = new List<Vector2Int[]>();
     private SpecialMove specialMove;
+    private Vector2Int? checkedKingTile = null;
+    private bool isKingInCheck;
+
 
     // Special Abilities Logic
+
+    public bool abilityJustUsed; // for now, only used to pause camera transition.
+
+    // Extra Turn Logic
     public bool whiteExtraTurn;
     public bool blackExtraTurn;
     public Button extraWhiteTurnButton;
     public Button extraBlackTurnButton;
 
     // need to access the extra turn button manager here, for refund logic for check situation
-    public ExtraTurnButton extraWhiteTurnButtonManager;
-    public ExtraTurnButton extraBlackTurnButtonManager;
+    public AbilityButtonsManager extraWhiteTurnButtonManager;
+    public AbilityButtonsManager extraBlackTurnButtonManager;
 
+    // Teleport Logic
     public bool whiteTeleportActive = false;
     public bool blackTeleportActive = false;
+
+    // Define black and white teleport buttons/managers This will be accessed for decrementing and checking.
     public Button blackTeleportButton;
     public Button whiteTeleportButton;
+    public AbilityButtonsManager whiteTeleportButtonManager;
+    public AbilityButtonsManager blackTeleportButtonManager;
 
     // Freeze ability logic
     public bool whiteFreezeAbilityActive = false;
@@ -90,8 +113,14 @@ public class Chessboard : MonoBehaviour
     private Dictionary<Vector2Int, (int team, int turnsRemaining)> frozenTilesInfo = new();
 
     // events logic
-    public int turnsUntilEvent;
+    public int eventTurnTracker;
+    public int totalTurnsElapsed;
     public int eventElapsedTurns;
+    public bool eventActive;
+    public List<Vector2Int> eventDisabledTiles = new();
+    public static Chessboard Instance { get; private set; }
+
+
 
     void Awake()
     {
@@ -99,13 +128,26 @@ public class Chessboard : MonoBehaviour
         whiteExtraTurn = false;
         blackExtraTurn = false;
 
+        Instance = this;
+
         // initiate freeze text
         whiteFreezeButtonText.text = $"Activate White Freeze ({whiteFreezeCharges})";
         blackFreezeButtonText.text = $"Activate Black Freeze ({blackFreezeCharges})";
 
         // initialize event tracking
-        turnsUntilEvent = 0;
-        eventElapsedTurns = 0;
+        totalTurnsElapsed = 0;
+        eventTurnTracker = 0; // events every 5 turns
+        eventElapsedTurns = 0; // events end after 3 turns
+        eventActive = false;
+
+        // turn off button auras
+        whiteTeleportButtonManager.blackTeleportButtonAura.SetActive(false);
+        blackTeleportButtonManager.whiteTeleportButtonAura.SetActive(false);
+
+        // turn off button colors
+        whiteTeleportButtonManager.whiteTeleportButtonColor.SetActive(false);
+        blackTeleportButtonManager.blackTeleportButtonColor.SetActive(false);
+
 
         GenerateAllTiles(tileSize, TILE_COUNT_X, TILE_COUNT_Y);
 
@@ -123,29 +165,47 @@ public class Chessboard : MonoBehaviour
 
         UpdateGraveyardBobbing();
 
-        // Show or hide the extra turn and teleport button based on the turn
-        if (isWhiteTurn)
+        if (totalTurnsElapsed > 2)
         {
-            extraWhiteTurnButton.gameObject.SetActive(true);
-            extraBlackTurnButton.gameObject.SetActive(false);
+            if (isWhiteTurn)
+            {
+                SetButtonState(extraWhiteTurnButton, true);
+                SetButtonState(extraBlackTurnButton, false);
 
-            whiteTeleportButton.gameObject.SetActive(true);
-            blackTeleportButton.gameObject.SetActive(false);
+                SetButtonState(whiteTeleportButton, true);
+                SetButtonState(blackTeleportButton, false);
 
-            whiteFreezeButton.gameObject.SetActive(true);
-            blackFreezeButton.gameObject.SetActive(false);
+                SetButtonState(whiteFreezeButton, true);
+                SetButtonState(blackFreezeButton, false);
+            }
+            else
+            {
+                SetButtonState(extraWhiteTurnButton, false);
+                SetButtonState(extraBlackTurnButton, true);
+
+                SetButtonState(whiteTeleportButton, false);
+                SetButtonState(blackTeleportButton, true);
+
+                SetButtonState(whiteFreezeButton, false);
+                SetButtonState(blackFreezeButton, true);
+            }
         }
         else
         {
-            extraWhiteTurnButton.gameObject.SetActive(false);
-            extraBlackTurnButton.gameObject.SetActive(true);
+            // Disable all buttons
+            SetButtonState(extraWhiteTurnButton, false);
+            SetButtonState(extraBlackTurnButton, false);
 
-            whiteTeleportButton.gameObject.SetActive(false);
-            blackTeleportButton.gameObject.SetActive(true);
+            SetButtonState(whiteTeleportButton, false);
+            SetButtonState(blackTeleportButton, false);
 
-            whiteFreezeButton.gameObject.SetActive(false);
-            blackFreezeButton.gameObject.SetActive(true);
+            SetButtonState(whiteFreezeButton, false);
+            SetButtonState(blackFreezeButton, false);
         }
+
+
+
+
 
         if ((whiteFreezeAbilityActive || blackFreezeAbilityActive) && Input.GetMouseButtonDown(0))
         {
@@ -164,7 +224,19 @@ public class Chessboard : MonoBehaviour
                     Vector2Int pos = new Vector2Int(x, y);
 
                     frozenTilesInfo[pos] = (freezingTeam, 1); // frozen for 1 full enemy turn
-                    tiles[x, y].GetComponent<Renderer>().material = freezeHighlightMaterial;
+
+                    // Only apply freeze highlight if the tile is occupied now
+                    if (chessPieces[x, y] != null)
+                    {
+                        tiles[x, y].GetComponent<Renderer>().material = freezeHighlightMaterial;
+                    }
+                    else
+                    {
+                        // If not occupied, apply nothing (keep original look)
+                        tiles[x, y].GetComponent<Renderer>().material = tileMaterial;
+                    }
+
+
                 }
             }
 
@@ -182,11 +254,11 @@ public class Chessboard : MonoBehaviour
             // END TURN IMMEDIATELY after using freeze
             isWhiteTurn = !isWhiteTurn;
 
+            // Swap the camera side
+            SwapCamera(isWhiteTurn);
+
             return;
         }
-
-
-
 
         RaycastHit info;
         Ray ray = currentCamera.ScreenPointToRay(Input.mousePosition);
@@ -248,29 +320,36 @@ public class Chessboard : MonoBehaviour
                         // Get a list of where I can go, highlight tiles as well
                         availableMoves = currentlyDragging.GetAvailableMoves(ref chessPieces, TILE_COUNT_X, TILE_COUNT_Y);
 
-                        // Teleport override, works with pieces in check (i.e. I can't teleport my pawn because it will put my king in check)
-                        // Right now, only the knight can teleport
+                         // Teleport override, works with pieces in check (i.e. I can't teleport my pawn because it will put my king in check)
                         if ((isWhiteTurn && whiteTeleportActive) || (!isWhiteTurn && blackTeleportActive))
                         {
-                            if (currentlyDragging.type == ChessPieceType.Knight)
+                            if (currentlyDragging.type != ChessPieceType.Queen) // queen can't teleport
                             {
                                 availableMoves.Clear();
                                 for (int x = 0; x < TILE_COUNT_X; x++)
                                 {
                                     for (int y = 0; y < TILE_COUNT_Y; y++)
                                     {
-                                        if (chessPieces[x, y] == null)
-                                            availableMoves.Add(new Vector2Int(x, y));
+                                        var pos = new Vector2Int(x, y);
+                                        // only allow true empty + not disabled
+                                        if (chessPieces[x, y] == null
+                                            && !(eventActive && eventDisabledTiles.Contains(pos)))
+                                        {
+                                            availableMoves.Add(pos);
+                                        }
                                     }
                                 }
 
-                                // Play teleport preview VFX
+                                // play teleport SFX TODO
+
+                                // zoom in on the teleporting piece TODO
                             }
                         }
 
 
-                        Debug.Log($"Clicked on piece: {chessPieces[hitPosition.x, hitPosition.y].name} (team {chessPieces[hitPosition.x, hitPosition.y].team})");
-                        Debug.Log($"isWhiteTurn: {isWhiteTurn}, whiteExtraTurn: {whiteExtraTurn}, blackExtraTurn: {blackExtraTurn}");
+
+                        // Debug.Log($"Clicked on piece: {chessPieces[hitPosition.x, hitPosition.y].name} (team {chessPieces[hitPosition.x, hitPosition.y].team})");
+                        // Debug.Log($"isWhiteTurn: {isWhiteTurn}, whiteExtraTurn: {whiteExtraTurn}, blackExtraTurn: {blackExtraTurn}");
 
                         // Get a list of special moves as well
                         specialMove = currentlyDragging.GetSpecialMoves(ref chessPieces, ref moveList, ref availableMoves);
@@ -296,6 +375,7 @@ public class Chessboard : MonoBehaviour
                     currentlyDragging = null;
                 }
                 currentlyDragging = null;
+
                 RemoveHighlightTiles();
 
 
@@ -349,44 +429,50 @@ public class Chessboard : MonoBehaviour
     {
         GameObject tile = tiles[pos.x, pos.y];
 
-        // If the tile is part of the available moves, change the hover color
+        // Do NOT override if this tile is the checked king tile
+        if (checkedKingTile.HasValue)
+        {
+            return;
+        }
+
+
+        // Rain event override
+        if (eventActive && eventDisabledTiles.Contains(pos))
+        {
+            tile.GetComponent<Renderer>().material = rainMaterial;
+            return;
+        }
+
+        // Valid move tiles
         if (availableMoves.Contains(pos))
         {
             if (isHovered)
             {
-                // If hovered, change it to hoverMaterial
                 tile.GetComponent<Renderer>().material = hoverMaterial;
             }
             else
             {
-                // RED if there's an enemy piece
                 if (chessPieces[pos.x, pos.y] != null && chessPieces[pos.x, pos.y].team != currentlyDragging.team)
-                {
-
-                    tile.GetComponent<Renderer>().material = redMaterial;
-                }
+                    tile.GetComponent<Renderer>().material = redMaterial; // attackable
                 else
-                {
-                    // If it's not a highlighted tile, just use the hover behavior as normal
                     tile.GetComponent<Renderer>().material = highlightMaterial;
-                }
             }
         }
         else
         {
-            if (!frozenTilesInfo.ContainsKey(pos))
+            // Frozen tiles
+            if (frozenTilesInfo.ContainsKey(pos))
             {
-                tile.layer = LayerMask.NameToLayer(isHovered ? "Hover" : "Tile");
-                tile.GetComponent<Renderer>().material = isHovered ? hoverMaterial : tileMaterial;
-            }
-            else
-            {
-                // Do NOT change material if frozen — keep freezeHighlightMaterial
-                tile.layer = LayerMask.NameToLayer("Tile");
+                return;
             }
 
+            // Default behavior
+            tile.GetComponent<Renderer>().material = isHovered ? hoverMaterial : tileMaterial;
         }
     }
+
+
+
 
 
     // Generate the board
@@ -514,27 +600,41 @@ public class Chessboard : MonoBehaviour
     }
 
     // Highlight available move tiles in green
+    // In Chessboard.HighlightTiles():
     private void HighlightTiles()
     {
         for (int i = 0; i < availableMoves.Count; i++)
         {
             Vector2Int move = availableMoves[i];
+
+            // Rain event override
+            if (eventActive && eventDisabledTiles.Contains(move))
+            {
+                tiles[move.x, move.y].GetComponent<Renderer>().material = rainMaterial;
+                continue;
+            }
+
+            // Allow highlight if frozen tile is empty; skip only if occupied and frozen
+            bool isFrozen = frozenTilesInfo.ContainsKey(move);
+            bool isOccupied = chessPieces[move.x, move.y] != null;
+            if (isFrozen && isOccupied)
+                continue;
+
             GameObject tile = tiles[move.x, move.y];
 
-            // Check if there's a piece on that tile and if it's an enemy
-            if (chessPieces[move.x, move.y] != null)
+            if (isOccupied && chessPieces[move.x, move.y].team != currentlyDragging.team)
             {
-                if (chessPieces[move.x, move.y].team != currentlyDragging.team)
-                {
-                    tile.GetComponent<Renderer>().material = redMaterial; // highlight red for enemy
-                }
+                tile.GetComponent<Renderer>().material = redMaterial;
             }
             else
             {
-                tile.GetComponent<Renderer>().material = highlightMaterial; // highlight green for empty
+                tile.GetComponent<Renderer>().material = highlightMaterial;
             }
         }
     }
+
+
+
 
     // freeze highlight tiles
     private void PreviewFreezeArea(Vector2Int center)
@@ -595,19 +695,18 @@ public class Chessboard : MonoBehaviour
         DisplayVictory(team);
     }
 
-    [SerializeField] private GameObject whiteWinsPanel;
-    [SerializeField] private GameObject blackWinsPanel;
-
     private void DisplayVictory(int winningTeam)
     {
+        Debug.Log("VICTORY: Team " + winningTeam);
         victoryScreen.SetActive(true);
         whiteWinsPanel.SetActive(winningTeam == 0);
         blackWinsPanel.SetActive(winningTeam == 1);
     }
 
+
     public void OnResetButton()
     {
-        // remove UI
+        // remove victory UI
         victoryScreen.SetActive(false);
         whiteWinsPanel.SetActive(1 == 0);
         blackWinsPanel.SetActive(0 == 1);
@@ -641,6 +740,15 @@ public class Chessboard : MonoBehaviour
 
         deadWhites.Clear();
         deadBlacks.Clear();
+
+        // reset event turn counter TODO
+
+
+        // reset ability charges TODO
+
+        // clear king check tile list
+        tiles[checkedKingTile.Value.x, checkedKingTile.Value.y].GetComponent<Renderer>().material = tileMaterial;
+        checkedKingTile = null;
 
         SpawnAllPieces();
         PositionAllPieces();
@@ -792,6 +900,10 @@ public class Chessboard : MonoBehaviour
 
     private void SimulateMoveForSinglePiece(ChessPiece cp, ref List<Vector2Int> moves, ChessPiece targetKing)
     {
+
+        // remove any disabled tiles before doing the simulation
+        moves.RemoveAll(m => eventActive && eventDisabledTiles.Contains(m));
+
         // save the current values, to reset after the function call
         int actualX = cp.currentX;
         int actualY = cp.currentY;
@@ -811,19 +923,47 @@ public class Chessboard : MonoBehaviour
             // Copy the [,] and not a reference
             ChessPiece[,] simulation = new ChessPiece[TILE_COUNT_X, TILE_COUNT_Y];
             List<ChessPiece> simAttackingPieces = new List<ChessPiece>();
+
             for (int x = 0; x < TILE_COUNT_X; x++)
             {
                 for (int y = 0; y < TILE_COUNT_Y; y++)
                 {
-                    if (chessPieces[x, y] != null)
-                    {
-                        simulation[x, y] = chessPieces[x, y];
-                        if (simulation[x, y].team != cp.team)
-                            simAttackingPieces.Add(simulation[x, y]);
-                    }
+                    var original = chessPieces[x, y];
+                    if (original == null)
+                        continue;
 
+                    simulation[x, y] = original;
+
+                    // only consider opposite-team pieces
+                    if (original.team != cp.team)
+                    {
+                        var pos = new Vector2Int(x, y);
+
+                        // but skip if that tile is frozen by the opposing team
+                        if (Chessboard.Instance.frozenTilesInfo.TryGetValue(pos, out var freezeData))
+                        {
+                            bool isFrozenByEnemy = freezeData.team != original.team;
+
+                            // if it's frozen by the enemy, check how many turns are left
+                            if (isFrozenByEnemy)
+                            {
+                                // if it's going to be unfrozen next turn, treat it as active
+                                if (freezeData.turnsRemaining > 1)
+                                {
+                                    continue; // will stay frozen next turn
+                                }
+
+                                // if it's going to unfreeze, we treat it as a threat
+                                // (so don't skip — let it be simulated)
+                            }
+                        }
+
+
+                        simAttackingPieces.Add(original);
+                    }
                 }
             }
+
 
             // Simulate that move
             simulation[actualX, actualY] = null;
@@ -870,50 +1010,246 @@ public class Chessboard : MonoBehaviour
         List<ChessPiece> attackingPieces = new List<ChessPiece>();
         List<ChessPiece> defendingPieces = new List<ChessPiece>();
         ChessPiece targetKing = null;
-        for (int x = 0; x < TILE_COUNT_X; x++)
-            for (int y = 0; y < TILE_COUNT_Y; y++)
-                if (chessPieces[x, y] != null)
-                {
-                    if (chessPieces[x, y].team == targetTeam)
-                    {
-                        defendingPieces.Add(chessPieces[x, y]);
-                        if (chessPieces[x, y].type == ChessPieceType.King)
-                            targetKing = chessPieces[x, y];
-                    }
-                    else
-                    {
-                        attackingPieces.Add(chessPieces[x, y]);
-                    }
-                }
-        // is the king attacked right now?
-        List<Vector2Int> currentAvailableMoves = new List<Vector2Int>();
-        for (int i = 0; i < attackingPieces.Count; i++)
+
+        // Clear red check highlight if it exists
+        // Clear previous red check tile
+        if (checkedKingTile.HasValue)
         {
-            var pieceMoves = attackingPieces[i].GetAvailableMoves(ref chessPieces, TILE_COUNT_X, TILE_COUNT_Y);
-            for (int b = 0; b < pieceMoves.Count; b++)
-                currentAvailableMoves.Add(pieceMoves[b]);
+            tiles[checkedKingTile.Value.x, checkedKingTile.Value.y].GetComponent<Renderer>().material = tileMaterial;
+            checkedKingTile = null;
+            isKingInCheck = false;
         }
 
-        // are we in check right now?
-        if (ContainsValidMove(ref currentAvailableMoves, new Vector2Int(targetKing.currentX, targetKing.currentY)))
+
+        // Identify target king and pieces
+        for (int x = 0; x < TILE_COUNT_X; x++)
         {
-            // King is under attack, can we move something to help him?
-            for (int i = 0; i < defendingPieces.Count; i++)
+            for (int y = 0; y < TILE_COUNT_Y; y++)
             {
-                List<Vector2Int> defendingMoves = defendingPieces[i].GetAvailableMoves(ref chessPieces, TILE_COUNT_X, TILE_COUNT_Y);
-                // since we're sending ref availableMoves, we delete moves that put us in check
-                SimulateMoveForSinglePiece(defendingPieces[i], ref defendingMoves, targetKing);
+                ChessPiece piece = chessPieces[x, y];
+                if (piece == null) continue;
 
-                if (defendingMoves.Count != 0)
-                    return false;
+                if (piece.team == targetTeam)
+                {
+                    defendingPieces.Add(piece);
+                    if (piece.type == ChessPieceType.King)
+                        targetKing = piece;
+                }
+                else
+                {
+                    attackingPieces.Add(piece);
+                }
+            }
+        }
 
+        // Check if king is currently attacked
+        List<Vector2Int> currentAvailableMoves = new List<Vector2Int>();
+        foreach (var attacker in attackingPieces)
+        {
+            var moves = attacker.GetAvailableMoves(ref chessPieces, TILE_COUNT_X, TILE_COUNT_Y);
+            currentAvailableMoves.AddRange(moves);
+        }
+
+        // Check if king is under attack
+        bool isKingUnderAttack = ContainsValidMove(ref currentAvailableMoves,
+            new Vector2Int(targetKing.currentX, targetKing.currentY));
+        if (!isKingUnderAttack)
+            return false;
+
+        // Check if any defending piece can block the check via normal moves
+        foreach (var defender in defendingPieces)
+        {
+            List<Vector2Int> defendingMoves = defender.GetAvailableMoves(ref chessPieces, TILE_COUNT_X, TILE_COUNT_Y);
+            SimulateMoveForSinglePiece(defender, ref defendingMoves, targetKing);
+            if (defendingMoves.Count > 0)
+
+            {
+                // highlight checked king tile in red
+                isKingInCheck = true;
+                checkedKingTile = new Vector2Int(targetKing.currentX, targetKing.currentY);
+                tiles[targetKing.currentX, targetKing.currentY].GetComponent<Renderer>().material = redMaterial;
+
+                // play check VFX TODO
+
+                return false; // Checkmate avoided
+            }
+        }
+
+        // Check if teleport can save the king (only if charges are available)
+        bool canTryTeleport = false;
+        if (targetTeam == 0)
+        {
+            if (whiteTeleportButtonManager != null)
+            {
+                Debug.Log($"[CHECK] White teleport remaining: {whiteTeleportButtonManager.remainingWhiteTeleports}");
             }
 
-            return true; // Checkmate exit
+            canTryTeleport = whiteTeleportButtonManager != null && (
+                whiteTeleportButtonManager.unlimitedWhiteTeleport ||
+                whiteTeleportButtonManager.remainingWhiteTeleports > 0);
+
+            Debug.Log($"White can Teleport {canTryTeleport}");
+            
         }
 
-        return false;
+        else
+        {
+            if (blackTeleportButtonManager != null)
+            {
+                Debug.Log($"[CHECK] Black teleport remaining: {blackTeleportButtonManager.remainingBlackTeleports}");
+            }
+
+            canTryTeleport = blackTeleportButtonManager.unlimitedBlackTeleport ||
+                            blackTeleportButtonManager.remainingBlackTeleports > 0;
+            Debug.Log($"Can Black Teleport? {canTryTeleport}");
+        }
+
+        if (canTryTeleport)
+        {
+            bool teleportSaved = TeleportCanSaveKing(defendingPieces, attackingPieces, targetKing, targetTeam);
+            if (teleportSaved)
+            {
+
+                // highlight checked king tile in red
+                isKingInCheck = true;
+                checkedKingTile = new Vector2Int(targetKing.currentX, targetKing.currentY);
+                tiles[targetKing.currentX, targetKing.currentY].GetComponent<Renderer>().material = redMaterial;
+
+                // play check SFX TODO
+
+                // make an aura around the teleport button if teleport needs to be used
+                if (targetTeam == 0)
+                {
+                    // turn on aura
+                    whiteTeleportButtonManager.whiteTeleportButtonAura.SetActive(true);
+                    StartCoroutine(PulseAura(whiteTeleportButtonManager.whiteTeleportButtonAura));
+
+
+                    // turn on button color (aura overlaps it)
+                    whiteTeleportButtonManager.whiteTeleportButtonColor.SetActive(true);
+                    StartCoroutine(PulseAura(blackTeleportButtonManager.blackTeleportButtonAura));
+
+
+
+                    Debug.Log($"{(targetTeam == 0 ? "White" : "Black")} must use Teleport to save the King!");
+
+                }
+                else
+                {
+                    // turn on aura
+                    blackTeleportButtonManager.blackTeleportButtonAura.SetActive(true);
+
+                    // turn on button color (aura overlaps it)
+                    blackTeleportButtonManager.blackTeleportButtonColor.SetActive(true);
+
+                    Debug.Log($"{(targetTeam == 0 ? "White" : "Black")} must use Teleport to save the King!");
+                }
+
+                return false; // Checkmate avoided via teleport
+            }
+        }
+
+        // No moves or teleport left: trigger checkmate
+        CheckMate(targetTeam == 0 ? 1 : 0); // Opponent wins
+
+        // highlight checked king tile in red
+        isKingInCheck = true;
+        checkedKingTile = new Vector2Int(targetKing.currentX, targetKing.currentY);
+        tiles[targetKing.currentX, targetKing.currentY].GetComponent<Renderer>().material = redMaterial;
+
+
+        // Play checkmate VFX TODO
+
+        return true;  //checkmate exit
     }
+
+    // function to check if teleporting can save the king, simulates all teleport moves
+    private bool TeleportCanSaveKing(List<ChessPiece> defendingPieces, List<ChessPiece> attackingPieces, ChessPiece targetKing, int targetTeam)
+    {
+        List<Vector2Int> teleportableTiles = new List<Vector2Int>();
+
+        // Find all valid teleport destinations
+        for (int x = 0; x < TILE_COUNT_X; x++)
+        {
+            for (int y = 0; y < TILE_COUNT_Y; y++)
+            {
+                Vector2Int pos = new Vector2Int(x, y);
+                bool tileOccupied = chessPieces[x, y] != null;
+                bool tileDisabled = eventActive && eventDisabledTiles.Contains(pos);
+
+                if (!tileOccupied && !tileDisabled)
+                {
+                    teleportableTiles.Add(pos);
+                }
+            }
+        }
+
+        foreach (ChessPiece defender in defendingPieces)
+        {
+            if (defender.type == ChessPieceType.Queen)
+                continue; // Queens cannot teleport
+
+            // Save original position
+            int originalX = defender.currentX;
+            int originalY = defender.currentY;
+
+            foreach (Vector2Int targetPos in teleportableTiles)
+            {
+                // Create deep copy of the board state
+                ChessPiece[,] simulation = new ChessPiece[TILE_COUNT_X, TILE_COUNT_Y];
+                for (int x = 0; x < TILE_COUNT_X; x++)
+                {
+                    for (int y = 0; y < TILE_COUNT_Y; y++)
+                    {
+                        if (chessPieces[x, y] != null)
+                        {
+                            simulation[x, y] = chessPieces[x, y];
+                        }
+                    }
+                }
+
+                // Remove defender from original position
+                simulation[originalX, originalY] = null;
+
+                // Place defender at new position
+                defender.currentX = targetPos.x;
+                defender.currentY = targetPos.y;
+                simulation[targetPos.x, targetPos.y] = defender;
+
+                // Check if king is still in check
+                bool kingSafe = true;
+                Vector2Int kingPos = new Vector2Int(targetKing.currentX, targetKing.currentY);
+
+                foreach (ChessPiece attacker in attackingPieces)
+                {
+                    // Skip attackers that were captured in the simulation
+                    if (simulation[attacker.currentX, attacker.currentY] == null)
+                        continue;
+
+                    List<Vector2Int> attackerMoves = attacker.GetAvailableMoves(ref simulation, TILE_COUNT_X, TILE_COUNT_Y);
+                    if (ContainsValidMove(ref attackerMoves, kingPos))
+                    {
+                        kingSafe = false;
+                        break;
+                    }
+                }
+
+                // Restore original position
+                defender.currentX = originalX;
+                defender.currentY = originalY;
+
+                if (kingSafe)
+                {
+                    return true; // Found a valid teleport that saves the king
+                }
+            }
+        }
+
+        return false; // No valid teleport can save the king
+    }
+
+
+
 
     // Operations
     private bool ContainsValidMove(ref List<Vector2Int> moves, Vector2Int pos)
@@ -942,6 +1278,10 @@ public class Chessboard : MonoBehaviour
 
     private bool MoveTo(ChessPiece cp, int x, int y)
     {
+        Vector2Int destination = new Vector2Int(x, y);
+        if (eventActive && eventDisabledTiles.Contains(destination))
+            return false;
+
         if (!ContainsValidMove(ref availableMoves, new Vector2Int(x, y)))
             return false;
 
@@ -998,7 +1338,7 @@ public class Chessboard : MonoBehaviour
 
         PositionSinglePiece(x, y);
 
-        Debug.Log($"Moving {cp} to ({x},{y})");
+        // Debug.Log($"Moving {cp} to ({x},{y})");
 
         // Extra turn and turn handling, with refund logic if move puts opponent in check
         bool movePutOpponentInCheck = MovePutsOpponentInCheck(cp);
@@ -1020,6 +1360,24 @@ public class Chessboard : MonoBehaviour
             else
             {
                 whiteExtraTurn = false; // consume extra turn
+
+                if (eventActive)
+                {
+                    // increment event elapsed turns
+                    eventElapsedTurns++;
+
+                    // increment total turns
+                    totalTurnsElapsed++;
+                }
+
+                else
+                {
+                    // increment turn tracker
+                    eventTurnTracker++;
+
+                    // increment total turns
+                    totalTurnsElapsed++;
+                }
             }
         }
         else if (!isWhiteTurn && blackExtraTurn)
@@ -1039,12 +1397,73 @@ public class Chessboard : MonoBehaviour
             else
             {
                 blackExtraTurn = false; // consume extra turn
+
+                if (eventActive)
+                {
+                    // increment event elapsed turns
+                    eventElapsedTurns++;
+
+                    // increment total turns
+                    totalTurnsElapsed++;
+
+                }
+
+                else
+                {
+                    // increment turn tracker
+                    eventTurnTracker++;
+
+                    // increment total turns
+                    totalTurnsElapsed++;
+                }
+
             }
         }
         else
         {
-            isWhiteTurn = !isWhiteTurn; // regular toggle
+            isWhiteTurn = !isWhiteTurn; // regular turn handling toggle
+
+            // turn off auras
+            DeactivateTeleportButtonAuras();
+
+            // reset the pulsing scale
+            whiteTeleportButtonManager.whiteTeleportButtonAura.transform.localScale = new Vector3(1, 1, 1);
+            blackTeleportButtonManager.blackTeleportButtonAura.transform.localScale = new Vector3(1, 1, 1);
+
+            // Swap the camera to black side camera
+            SwapCamera(isWhiteTurn);
+
+            if (!eventActive)
+            {
+                // increment turn tracker
+                eventTurnTracker++;
+
+                // increment total turns
+                totalTurnsElapsed++;
+            }
         }
+
+        if (eventActive)
+        {
+            eventElapsedTurns++;
+            if (eventElapsedTurns == 3)
+            {
+                eventActive = false;
+                eventElapsedTurns = 0;
+
+                EndRainEvent();
+            }
+        }
+        else if (eventTurnTracker == 5)
+        {
+            eventActive = true;
+            
+            eventTurnTracker = 0;
+
+            TriggerRainEvent();
+        }
+
+
 
         // Unfreeze logic: reduce timers and remove expired ones
         List<Vector2Int> toUnfreeze = new();
@@ -1053,19 +1472,16 @@ public class Chessboard : MonoBehaviour
         {
             (int freezeTeam, int turnsRemaining) = kvp.Value;
 
-            // Only reduce timer if the freezing team is the opponent of the new active team
-            if (freezeTeam != (isWhiteTurn ? 0 : 1))
+            int newTurnsRemaining = turnsRemaining - 1;
+
+            if (newTurnsRemaining <= 0)
             {
-                int newTurnsRemaining = turnsRemaining - 1;
-                if (newTurnsRemaining <= 0)
-                {
-                    tiles[kvp.Key.x, kvp.Key.y].GetComponent<Renderer>().material = tileMaterial;
-                    toUnfreeze.Add(kvp.Key);
-                }
-                else
-                {
-                    frozenTilesInfo[kvp.Key] = (freezeTeam, newTurnsRemaining);
-                }
+                tiles[kvp.Key.x, kvp.Key.y].GetComponent<Renderer>().material = tileMaterial;
+                toUnfreeze.Add(kvp.Key);
+            }
+            else
+            {
+                frozenTilesInfo[kvp.Key] = (freezeTeam, newTurnsRemaining);
             }
         }
 
@@ -1073,7 +1489,6 @@ public class Chessboard : MonoBehaviour
         {
             frozenTilesInfo.Remove(pos);
         }
-
 
 
         Debug.Log(isWhiteTurn ? "White's turn" : "Black's turn");
@@ -1089,13 +1504,18 @@ public class Chessboard : MonoBehaviour
         }
 
         // trigger rise and materialize effect if teleport was used
-        if ((whiteTeleportActive || blackTeleportActive) && cp.type == ChessPieceType.Knight)
+        if ((whiteTeleportActive || blackTeleportActive) && cp.type != ChessPieceType.Queen)
         {
             Vector3 tileCenter = GetTileCenter(x, y);
 
             // if its white, use different duration than black
             if (cp.team == 0)
             {
+
+                // camera zoom in on the white piece TODO, fix
+                // StartCoroutine(ZoomOnPieceAfterTeleport(cp.transform));
+
+                // play rise
                 cp.PlayTeleportRise(tileCenter, 1.0f, 0.65f);
                 cp.PlayMaterializeEffect(2.5f); // runs alongside the rise
             }
@@ -1103,6 +1523,9 @@ public class Chessboard : MonoBehaviour
             // if its black, use different duration than white
             if (cp.team == 1)
             {
+                // camera zoom in on the black piece TODO, fix
+                // StartCoroutine(ZoomOnPieceAfterTeleport(cp.transform));
+
                 cp.PlayTeleportRise(tileCenter, 1.0f, 0.65f);
                 cp.PlayMaterializeEffect(1.5f); // runs alongside the rise
             }
@@ -1172,25 +1595,302 @@ public class Chessboard : MonoBehaviour
 
     }
 
+   
+    // Returns true if the given team’s king is currently under attack.
+    private bool IsInCheck(int team)
+    {
+        // 1) find the king
+        ChessPiece king = null;
+        for (int x = 0; x < TILE_COUNT_X; x++)
+        {
+            for (int y = 0; y < TILE_COUNT_Y; y++)
+            {
+                var cp = chessPieces[x, y];
+                if (cp != null && cp.team == team && cp.type == ChessPieceType.King)
+                {
+                    king = cp;
+                    break;
+                }
+            }
+            if (king != null) break;
+        }
+
+        // 2) gather all enemy pieces
+        List<ChessPiece> enemies = new List<ChessPiece>();
+        for (int x = 0; x < TILE_COUNT_X; x++)
+            for (int y = 0; y < TILE_COUNT_Y; y++)
+                if (chessPieces[x, y] != null && chessPieces[x, y].team != team)
+                    enemies.Add(chessPieces[x, y]);
+
+        // 3) see if any can move onto the king’s square
+        var kingPos = new Vector2Int(king.currentX, king.currentY);
+        foreach (var attacker in enemies)
+        {
+            var moves = attacker.GetAvailableMoves(ref chessPieces, TILE_COUNT_X, TILE_COUNT_Y);
+            if (ContainsValidMove(ref moves, kingPos))
+                return true;
+        }
+        return false;
+    }
+
+
     // freeze ability button event
     public void OnWhiteFreezeButtonPressed()
     {
-        if (whiteFreezeCharges > 0 && isWhiteTurn)
+        // disallow if white in check
+        if (!isWhiteTurn || whiteFreezeCharges <= 0 || IsInCheck(0))
         {
-            whiteFreezeAbilityActive = true;
-            whiteFreezeCharges--;
-            whiteFreezeButtonText.text = $"Activate White Freeze ({whiteFreezeCharges})";
+            Debug.Log("Cannot use freeze while King is in check!");
+            return;
         }
+
+        whiteFreezeAbilityActive = true;
+        whiteFreezeCharges--;
+        abilityJustUsed = true;
+        whiteFreezeButtonText.text = $"Activate White Freeze ({whiteFreezeCharges})";
     }
 
     public void OnBlackFreezeButtonPressed()
     {
-        if (blackFreezeCharges > 0 && !isWhiteTurn)
+        // disallow if black in check
+        if (isWhiteTurn || blackFreezeCharges <= 0 || IsInCheck(1))
         {
-            blackFreezeAbilityActive = true;
-            blackFreezeCharges--;
-            blackFreezeButtonText.text = $"Activate Black Freeze ({blackFreezeCharges})";
+            Debug.Log("Cannot use freeze while King is in check!");
+            return;
+        }
+
+        blackFreezeAbilityActive = true;
+        blackFreezeCharges--;
+        abilityJustUsed = true;
+        blackFreezeButtonText.text = $"Activate Black Freeze ({blackFreezeCharges})";
+    }
+
+    // event methods
+    private void TriggerRainEvent()
+    {
+        eventActive = true;
+        eventElapsedTurns = 0;
+        eventDisabledTiles.Clear();
+
+        int maxAttempts = 100; // avoid infinite loop
+        int attempts = 0;
+
+        while (eventDisabledTiles.Count < 4 && attempts < maxAttempts)
+        {
+            attempts++;
+
+            int x = UnityEngine.Random.Range(0, TILE_COUNT_X);
+            int y = UnityEngine.Random.Range(0, TILE_COUNT_Y / 2);
+
+            Vector2Int pos1 = new Vector2Int(x, y);
+            Vector2Int pos2 = new Vector2Int(TILE_COUNT_X - 1 - x, TILE_COUNT_Y - 1 - y);
+
+            // Only disable if both are unoccupied and not already added
+            if (chessPieces[pos1.x, pos1.y] == null &&
+                chessPieces[pos2.x, pos2.y] == null &&
+                !eventDisabledTiles.Contains(pos1) &&
+                !eventDisabledTiles.Contains(pos2))
+            {
+                // define separate renderers
+                Renderer rend1 = tiles[pos1.x, pos1.y].GetComponent<Renderer>();
+                Renderer rend2 = tiles[pos2.x, pos2.y].GetComponent<Renderer>();
+
+                // assign the rainmaterial
+                rend1.material = rainMaterial;
+                rend2.material = rainMaterial;
+
+                // add to disabled tiles list
+                eventDisabledTiles.Add(pos1);
+                eventDisabledTiles.Add(pos2);
+            }
+
+        }
+
+        Debug.Log("Event triggered: 2 mirrored empty tiles disabled for 3 turns.");
+    }
+
+
+    private void EndRainEvent()
+    {
+        foreach (Vector2Int tile in eventDisabledTiles)
+        {
+            tiles[tile.x, tile.y].GetComponent<Renderer>().material = tileMaterial;
+        }
+
+        eventDisabledTiles.Clear();
+        eventActive = false;
+        eventElapsedTurns = 0;
+
+        Debug.Log("Event ended: Disabled tiles re-enabled.");
+    }
+
+    // button interactivity status
+    void SetButtonState(Button button, bool enabled)
+    {
+        button.interactable = enabled;
+        button.GetComponent<Image>().enabled = enabled;
+
+        var text = button.GetComponentInChildren<TextMeshProUGUI>();
+        if (text != null) text.enabled = enabled;
+    }
+
+    // aura functions
+
+    public void DeactivateTeleportButtonAuras()
+
+    {
+
+        // supress warning
+        if (isKingInCheck == false || isKingInCheck == true)
+        {
+            Debug.Log("");
+        }
+
+
+        // Turn off white teleport auras
+        if (whiteTeleportButtonManager != null && whiteTeleportButtonManager.whiteTeleportButtonAura != null)
+        {
+            whiteTeleportButtonManager.whiteTeleportButtonAura.SetActive(false);
+            whiteTeleportButtonManager.whiteTeleportButtonColor.SetActive(false);
+            Debug.Log("White teleport auras deactivated");
+        }
+
+        // Turn off black teleport auras
+        if (blackTeleportButtonManager != null && blackTeleportButtonManager.blackTeleportButtonAura != null)
+        {
+            blackTeleportButtonManager.blackTeleportButtonAura.SetActive(false);
+            blackTeleportButtonManager.blackTeleportButtonColor.SetActive(false);
+            Debug.Log("Black teleport auras deactivated");
         }
     }
+
+    IEnumerator PulseAura(GameObject aura)
+    {
+        Vector3 originalScale = aura.transform.localScale;
+        float pulseSpeed = 0.04f; // lower for slower speed
+        float pulseAmount = 0.05f; // smaller pulsing range
+        float baseScaleFactor = 0.999f; // smaller overall scale
+
+        Image auraImage = aura.GetComponent<Image>();
+
+        if (auraImage == null)
+        {
+            Debug.LogWarning("PulseAura: No Image component found on aura.");
+            yield break;
+        }
+
+        Color originalColor = auraImage.color;
+
+        while (aura.activeSelf)
+        {
+            float time = Time.time * pulseSpeed;
+            float scaleOffset = Mathf.PingPong(time, pulseAmount);
+            float finalScale = baseScaleFactor + scaleOffset;
+            float alpha = 0.1f + Mathf.PingPong(time, 0.9f); // fading
+
+            aura.transform.localScale = originalScale * finalScale;
+
+            Color newColor = originalColor;
+            newColor.a = alpha;
+            auraImage.color = newColor;
+
+            yield return null;
+        }
+
+        aura.transform.localScale = originalScale;
+        auraImage.color = originalColor;
+    }
+
+    // camera swapping function
+    public void SwapCamera(bool isWhiteTurn)
+    {
+        StopAllCoroutines(); // Stop any existing camera transitions
+        Transform target = isWhiteTurn ? whiteCameraPosition : blackCameraPosition;
+        StartCoroutine(AnimateCameraTransition(target));
+    }
+
+    // camera animation
+    IEnumerator AnimateCameraTransition(Transform target)
+    {
+        // if a (freeze/teleport) has been used, wait a bit until doing transition
+        if (abilityJustUsed)
+        {
+            yield return new WaitForSeconds(1.7f);
+            abilityJustUsed = false;
+        }
+
+        else
+        {
+            // wait a little bit after any move
+            yield return new WaitForSeconds(0.7f);
+        }
+        
+        Vector3 startPos = mainCamera.transform.position;
+        Quaternion startRot = mainCamera.transform.rotation;
+
+        Vector3 endPos = target.position;
+        Quaternion endRot = target.rotation;
+
+        float elapsed = 0f;
+
+        while (elapsed < cameraTransitionDuration)
+        {
+            float t = elapsed / cameraTransitionDuration;
+            mainCamera.transform.position = Vector3.Lerp(startPos, endPos, t);
+            mainCamera.transform.rotation = Quaternion.Slerp(startRot, endRot, t);
+
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        // Snap to final position/rotation
+        mainCamera.transform.position = endPos;
+        mainCamera.transform.rotation = endRot;
+    }
+
+    // camera zoom for teleport
+    // TODO fix, play around to get the right camera angle
+    public IEnumerator ZoomOnPieceAfterTeleport(Transform pieceTransform, float zoomHeight = 4f, float zoomDuration = 0.5f)
+    {
+
+        // Target position is directly above the piece
+        Vector3 targetPos = pieceTransform.position;
+        Vector3 zoomPos = targetPos + Vector3.up * zoomHeight;
+        Quaternion zoomRot = Quaternion.Euler(90f, 0f, 0f); // Look straight down
+
+        Vector3 originalPos = mainCamera.transform.position;
+        Quaternion originalRot = mainCamera.transform.rotation;
+
+        float elapsed = 0f;
+
+        // Zoom in (move above the piece and look straight down)
+        while (elapsed < zoomDuration)
+        {
+            float t = elapsed / zoomDuration;
+            mainCamera.transform.position = Vector3.Lerp(originalPos, zoomPos, t);
+            mainCamera.transform.rotation = Quaternion.Slerp(originalRot, zoomRot, t);
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        mainCamera.transform.position = zoomPos;
+        mainCamera.transform.rotation = zoomRot;
+
+        // Optional: Hold briefly at zoomed position
+        yield return null; // Remove or change if you want a pause
+
+        // Zoom out
+        elapsed = 0f;
+        while (elapsed < zoomDuration)
+        {
+            float t = elapsed / zoomDuration;
+            mainCamera.transform.position = Vector3.Lerp(zoomPos, originalPos, t);
+            mainCamera.transform.rotation = Quaternion.Slerp(zoomRot, originalRot, t);
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+    }
+
+
 
 }
