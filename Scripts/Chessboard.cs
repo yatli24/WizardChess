@@ -4,8 +4,7 @@ using UnityEngine.UI;
 using TMPro;
 using System;
 using System.Collections;
-
-
+using System.Linq;
 
 
 #if UNITY_EDITOR
@@ -19,7 +18,6 @@ public enum SpecialMove
     Castling,
     Promotion
 }
-
 
 public class Chessboard : MonoBehaviour
 {
@@ -78,17 +76,17 @@ public class Chessboard : MonoBehaviour
 
     public bool abilityJustUsed; // for now, only used to pause camera transition.
 
-    // Extra Turn Logic
+    // Extra Turn
     public bool whiteExtraTurn;
     public bool blackExtraTurn;
     public Button extraWhiteTurnButton;
     public Button extraBlackTurnButton;
 
-    // need to access the extra turn button manager here, for refund logic for check situation
+    // Access the extra turn button manager here, for refund logic and check situation
     public AbilityButtonsManager extraWhiteTurnButtonManager;
     public AbilityButtonsManager extraBlackTurnButtonManager;
 
-    // Teleport Logic
+    // Teleport
     public bool whiteTeleportActive = false;
     public bool blackTeleportActive = false;
 
@@ -98,7 +96,7 @@ public class Chessboard : MonoBehaviour
     public AbilityButtonsManager whiteTeleportButtonManager;
     public AbilityButtonsManager blackTeleportButtonManager;
 
-    // Freeze ability logic
+    // Freeze
     public bool whiteFreezeAbilityActive = false;
     public bool blackFreezeAbilityActive = false;
 
@@ -112,15 +110,34 @@ public class Chessboard : MonoBehaviour
 
     private Dictionary<Vector2Int, (int team, int turnsRemaining)> frozenTilesInfo = new();
 
-    // events logic
+    // Ressurect
+    public Button whiteRessurectButton;
+    public Button blackRessurectButton;
+    public TextMeshProUGUI whiteRessurectButtonText;
+    public TextMeshProUGUI blackRessurectButtonText;
+
+    [NonSerialized] public int blackRessurectCharges = 1;
+    [NonSerialized] public int whiteRessurectCharges = 1;
+
+    public bool isRessurecting;
+    public int ressurectingTeam;
+
+    // ressurect camera position
+    public Vector3 whiteResurrectCamPos = new Vector3(3.5f, 3.5f, 0f);
+    public Vector3 blackResurrectCamPos = new Vector3(-3.5f, 3.5f, 0f); // placeholder — update with your real values
+
+    // ressurect camera rotation
+    public Vector3 whiteResurrectCamEuler = new Vector3(65f, -90f, 0f);
+    public Vector3 blackResurrectCamEuler = new Vector3(65f, 90f, 0f); // placeholder — update with your real values
+
+
+    // Events
     public int eventTurnTracker;
     public int totalTurnsElapsed;
     public int eventElapsedTurns;
     public bool eventActive;
     public List<Vector2Int> eventDisabledTiles = new();
     public static Chessboard Instance { get; private set; }
-
-
 
     void Awake()
     {
@@ -177,6 +194,9 @@ public class Chessboard : MonoBehaviour
 
                 SetButtonState(whiteFreezeButton, true);
                 SetButtonState(blackFreezeButton, false);
+
+                SetButtonState(whiteRessurectButton, true);
+                SetButtonState(blackRessurectButton, false);
             }
             else
             {
@@ -188,6 +208,9 @@ public class Chessboard : MonoBehaviour
 
                 SetButtonState(whiteFreezeButton, false);
                 SetButtonState(blackFreezeButton, true);
+
+                SetButtonState(whiteRessurectButton, false);
+                SetButtonState(blackRessurectButton, true);
             }
         }
         else
@@ -201,11 +224,10 @@ public class Chessboard : MonoBehaviour
 
             SetButtonState(whiteFreezeButton, false);
             SetButtonState(blackFreezeButton, false);
+
+            SetButtonState(whiteRessurectButton, false);
+            SetButtonState(blackRessurectButton, false);
         }
-
-
-
-
 
         if ((whiteFreezeAbilityActive || blackFreezeAbilityActive) && Input.GetMouseButtonDown(0))
         {
@@ -262,6 +284,28 @@ public class Chessboard : MonoBehaviour
 
         RaycastHit info;
         Ray ray = currentCamera.ScreenPointToRay(Input.mousePosition);
+
+        // if the player is using resurrect, detect graveyard clicking
+        if (isRessurecting && Input.GetMouseButtonDown(0))
+        {
+            if (Physics.Raycast(ray, out RaycastHit hit, 100))
+            {
+                ChessPiece clicked = hit.transform.GetComponent<ChessPiece>();
+
+                // cannot click on the queen for ressurect
+                if (clicked != null && clicked.type != ChessPieceType.Queen)
+                {
+                    bool valid = (ressurectingTeam == 0 && deadWhites.Contains(clicked)) ||
+                                 (ressurectingTeam == 1 && deadBlacks.Contains(clicked));
+
+                    if (valid)
+                    {
+                        TryResurrectPiece(clicked, ressurectingTeam);
+                    }
+                }
+            }
+        }
+
         if (Physics.Raycast(ray, out info, 100, LayerMask.GetMask("Tile", "Hover", "Highlight")))
         {
             // freeze hover
@@ -340,9 +384,8 @@ public class Chessboard : MonoBehaviour
                                     }
                                 }
 
-                                // play teleport SFX TODO
+                                // play teleport channeling SFX (while dragging) TODO
 
-                                // zoom in on the teleporting piece TODO
                             }
                         }
 
@@ -471,10 +514,6 @@ public class Chessboard : MonoBehaviour
         }
     }
 
-
-
-
-
     // Generate the board
     private void GenerateAllTiles(float tileSize, int tileCountX, int tileCountY)
     {
@@ -572,7 +611,7 @@ public class Chessboard : MonoBehaviour
         return cp;
     }
 
-    // Positioning
+    // Positioning pieces
     private void PositionAllPieces()
     {
         for (int x = 0; x < TILE_COUNT_X; x++)
@@ -633,9 +672,6 @@ public class Chessboard : MonoBehaviour
         }
     }
 
-
-
-
     // freeze highlight tiles
     private void PreviewFreezeArea(Vector2Int center)
     {
@@ -689,7 +725,7 @@ public class Chessboard : MonoBehaviour
         availableMoves.Clear();
     }
 
-    // Checkmate
+    // Checkmate End Screen
     private void CheckMate(int team)
     {
         DisplayVictory(team);
@@ -766,7 +802,7 @@ public class Chessboard : MonoBehaviour
 #endif
     }
 
-    // Special Moves
+    // Special Moves (base chess)
     private void ProcessSpecialMove()
     {
         if (specialMove == SpecialMove.EnPassant)
@@ -884,6 +920,8 @@ public class Chessboard : MonoBehaviour
 
         }
     }
+    
+    // Check Prevention and Simulation
     private void PreventCheck()
     {
         ChessPiece targetKing = null;
@@ -1163,7 +1201,7 @@ public class Chessboard : MonoBehaviour
         return true;  //checkmate exit
     }
 
-    // function to check if teleporting can save the king, simulates all teleport moves
+    // Check if teleporting can save the king, simulates all teleport moves
     private bool TeleportCanSaveKing(List<ChessPiece> defendingPieces, List<ChessPiece> attackingPieces, ChessPiece targetKing, int targetTeam)
     {
         List<Vector2Int> teleportableTiles = new List<Vector2Int>();
@@ -1247,9 +1285,6 @@ public class Chessboard : MonoBehaviour
 
         return false; // No valid teleport can save the king
     }
-
-
-
 
     // Operations
     private bool ContainsValidMove(ref List<Vector2Int> moves, Vector2Int pos)
@@ -1512,22 +1547,26 @@ public class Chessboard : MonoBehaviour
             if (cp.team == 0)
             {
 
-                // camera zoom in on the white piece TODO, fix
+                // camera zoom in on the white teleporting piece TODO, fix
                 // StartCoroutine(ZoomOnPieceAfterTeleport(cp.transform));
 
                 // play rise
                 cp.PlayTeleportRise(tileCenter, 1.0f, 0.65f);
                 cp.PlayMaterializeEffect(2.5f); // runs alongside the rise
+
+                // play teleport SFX (after piece was placed with teleport) TODO
             }
 
             // if its black, use different duration than white
             if (cp.team == 1)
             {
-                // camera zoom in on the black piece TODO, fix
+                // camera zoom in on the black teleporting piece TODO, fix
                 // StartCoroutine(ZoomOnPieceAfterTeleport(cp.transform));
 
                 cp.PlayTeleportRise(tileCenter, 1.0f, 0.65f);
                 cp.PlayMaterializeEffect(1.5f); // runs alongside the rise
+
+                // play teleport SFX (after piece was placed with teleport) TODO
             }
         }
 
@@ -1576,26 +1615,6 @@ public class Chessboard : MonoBehaviour
         return false;
     }
 
-
-    private void UpdateGraveyardBobbing()
-    {
-        // Animate both white and black graveyards
-        AnimateGraveyardBobbing(deadWhites);
-        AnimateGraveyardBobbing(deadBlacks);
-    }
-
-    private void AnimateGraveyardBobbing(List<ChessPiece> pieces)
-    {
-        foreach (ChessPiece piece in pieces)
-        {
-            // Calculate the new y position using Mathf.PingPong for smooth oscillation
-            float bobbingY = Mathf.PingPong(Time.time * 0.04f, 0.1f) + 0.52f; // bob between 0.6 and 0.7
-            piece.transform.position = new Vector3(piece.transform.position.x, bobbingY, piece.transform.position.z);
-        }
-
-    }
-
-   
     // Returns true if the given team’s king is currently under attack.
     private bool IsInCheck(int team)
     {
@@ -1633,8 +1652,7 @@ public class Chessboard : MonoBehaviour
         return false;
     }
 
-
-    // freeze ability button event
+    // freeze button onClick methods
     public void OnWhiteFreezeButtonPressed()
     {
         // disallow if white in check
@@ -1709,7 +1727,6 @@ public class Chessboard : MonoBehaviour
         Debug.Log("Event triggered: 2 mirrored empty tiles disabled for 3 turns.");
     }
 
-
     private void EndRainEvent()
     {
         foreach (Vector2Int tile in eventDisabledTiles)
@@ -1724,6 +1741,248 @@ public class Chessboard : MonoBehaviour
         Debug.Log("Event ended: Disabled tiles re-enabled.");
     }
 
+    // Ressurect Methods
+    public void RessurectPiece(int team)
+    {
+        List<ChessPiece> graveyard = (team == 0) ? deadWhites : deadBlacks;
+
+        if (graveyard.Count == 0)
+        {
+            Debug.Log("No pieces in graveyard to resurrect.");
+            return;
+        }
+
+        isRessurecting = true;
+        ressurectingTeam = team;
+
+        // animate camera to move to graveyard
+        Vector3 targetPos = team == 0 ? whiteResurrectCamPos : blackResurrectCamPos;
+        Quaternion targetRot = Quaternion.Euler(team == 0 ? whiteResurrectCamEuler : blackResurrectCamEuler);
+
+        StartCoroutine(AnimateCameraToGraveyard(targetPos, targetRot, 1.0f));
+
+
+        // enable colliders for pieces in graveyard, not the queen.
+        foreach (var piece in graveyard)
+        {
+            if (piece.type == ChessPieceType.Queen)
+                continue;
+
+            var collider = piece.GetComponent<Collider>();
+            if (collider == null)
+                collider = piece.gameObject.AddComponent<BoxCollider>();
+            collider.enabled = true;
+        }
+
+    }
+
+
+    public void OnWhiteRessurectButtonPressed()
+    {
+        // get the white king
+        ChessPiece whiteKing = GetKing(0);
+
+        Vector2Int kingPos = new Vector2Int(whiteKing.currentX, whiteKing.currentY);
+        if (GetAdjacentFreeTiles(kingPos).Count == 0)
+        {
+            Debug.Log("No space available next to white king for resurrection.");
+            return;
+        }
+
+        if (IsInCheck(0))
+        {
+            Debug.Log("Cannot use ressurect while King is in check!");
+            return;
+        }
+
+        // if the white graveyard is empty, exit ressurect
+        if (deadWhites.Count == 0)
+        {
+            Debug.Log("No pieces in white graveyard to resurrect.");
+            return;
+        }
+
+        // if the white graveyard only has a queen, exit
+        if (deadWhites.Count == 1 && (deadWhites[0].type == ChessPieceType.Queen))
+        {
+            Debug.Log("Only Queen is in white graveyard. Cannot resurrect.");
+            return;
+        }
+
+        // TODO game balancing, perhaps ressurect is the bishop's ability.
+        // if there is no bishop, then you cannot ressurect
+        // or, make it so that there needs to be both bishops for ressurect
+
+        RessurectPiece(0);
+
+        whiteRessurectCharges--;
+        abilityJustUsed = true;
+        whiteRessurectButtonText.text = $"Activate White Ressurect ({whiteRessurectCharges})";
+    }
+
+
+    public void OnBlackRessurectButtonPressed()
+    {
+        // get the black king
+        ChessPiece blackKing = GetKing(1);
+
+        Vector2Int kingPos = new Vector2Int(blackKing.currentX, blackKing.currentY);
+        if (GetAdjacentFreeTiles(kingPos).Count == 0)
+        {
+            Debug.Log("No space available next to black king for resurrection.");
+            return;
+        }
+
+        if (IsInCheck(1))
+        {
+            Debug.Log("Cannot use ressurect while King is in check!");
+            return;
+        }
+
+        // if the white graveyard is empty, exit ressurect
+        if (deadBlacks.Count == 0)
+        {
+            Debug.Log("No pieces in black graveyard to resurrect.");
+            return;
+        }
+
+        // if the black graveyard only has a queen, exit
+        if (deadBlacks.Count == 1 && (deadBlacks[0].type == ChessPieceType.Queen))
+        {
+            Debug.Log("Only Queen is in black graveyard. Cannot resurrect.");
+            return;
+        }
+
+        // TODO game balancing, perhaps ressurect is the bishop's ability.
+        // if there is no bishop, then you cannot ressurect
+        // or, make it so that there needs to be both bishops for ressurect
+
+        RessurectPiece(1);
+
+        blackRessurectCharges--;
+        abilityJustUsed = true;
+        blackRessurectButtonText.text = $"Activate Black Ressurect ({blackRessurectCharges})";
+    }
+
+
+    private ChessPiece GetKing(int team)
+    {
+        for (int x = 0; x < TILE_COUNT_X; x++)
+        {
+            for (int y = 0; y < TILE_COUNT_Y; y++)
+            {
+                ChessPiece cp = chessPieces[x, y];
+                if (cp != null && cp.team == team && cp.type == ChessPieceType.King)
+                    return cp;
+            }
+        }
+        return null;
+    }
+
+    private List<Vector2Int> GetAdjacentFreeTiles(Vector2Int pos)
+    {
+        List<Vector2Int> freeTiles = new();
+        Vector2Int[] directions = new Vector2Int[]
+        {
+        new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
+        new(1, 1), new(1, -1), new(-1, 1), new(-1, -1)
+        };
+
+        foreach (Vector2Int dir in directions)
+        {
+            Vector2Int check = pos + dir;
+            if (check.x >= 0 && check.y >= 0 && check.x < TILE_COUNT_X && check.y < TILE_COUNT_Y)
+            {
+                if (chessPieces[check.x, check.y] == null && (!eventActive || !eventDisabledTiles.Contains(check)))
+                {
+                    freeTiles.Add(check);
+                }
+            }
+        }
+
+        return freeTiles;
+    }
+
+    private void TryResurrectPiece(ChessPiece pieceToResurrect, int team)
+    {
+        ChessPiece king = GetKing(team);
+        Vector2Int kingPos = new Vector2Int(king.currentX, king.currentY);
+        List<Vector2Int> freeTiles = GetAdjacentFreeTiles(kingPos);
+
+        Vector2Int spawnPos = freeTiles[0];
+
+        ChessPiece newPiece = SpawnSinglePiece(pieceToResurrect.type, team);
+        chessPieces[spawnPos.x, spawnPos.y] = newPiece;
+        newPiece.currentX = spawnPos.x;
+        newPiece.currentY = spawnPos.y;
+
+        newPiece.transform.position = new Vector3(spawnPos.x * tileSize, yOffset - 2f, spawnPos.y * tileSize) - bounds; // underground
+        PositionSinglePiece(spawnPos.x, spawnPos.y);
+
+        if (team == 0) deadWhites.Remove(pieceToResurrect);
+        else deadBlacks.Remove(pieceToResurrect);
+
+        Destroy(pieceToResurrect.gameObject);
+
+        isRessurecting = false;
+        ressurectingTeam = -1;
+
+        StartCoroutine(HandleResurrectionAfterEffect(newPiece));
+    }
+
+    private IEnumerator HandleResurrectionAfterEffect(ChessPiece resurrectedPiece)
+    {
+        bool isWhite = resurrectedPiece.team == 0;
+        Transform teamCam = isWhite ? whiteCameraPosition : blackCameraPosition;
+
+        // Snap back to team camera
+        mainCamera.transform.position = teamCam.position;
+        mainCamera.transform.rotation = teamCam.rotation;
+
+        // Animate rise and materialize
+        Vector3 targetPos = GetTileCenter(resurrectedPiece.currentX, resurrectedPiece.currentY);
+        resurrectedPiece.PlayTeleportRise(targetPos, 1.0f, 0.6f);
+        resurrectedPiece.PlayMaterializeEffect(1.8f);
+
+        yield return new WaitForSeconds(0f);
+
+        // Force swap turn after ressurect
+        isWhiteTurn = !isWhiteTurn;
+        SwapCamera(isWhiteTurn);
+    }
+
+    private IEnumerator AnimateCameraToGraveyard(Vector3 targetPosition, Quaternion targetRotation, float duration)
+    {
+        Vector3 startPos = mainCamera.transform.position;
+        Quaternion startRot = mainCamera.transform.rotation;
+
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            float t = elapsed / duration;
+            mainCamera.transform.position = Vector3.Lerp(startPos, targetPosition, t);
+            mainCamera.transform.rotation = Quaternion.Slerp(startRot, targetRotation, t);
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        mainCamera.transform.position = targetPosition;
+        mainCamera.transform.rotation = targetRotation;
+
+        // Enable colliders on graveyard pieces now (after move finishes)
+        List<ChessPiece> graveyard = (ressurectingTeam == 0) ? deadWhites : deadBlacks;
+        foreach (var piece in graveyard)
+        {
+            var collider = piece.GetComponent<Collider>();
+            if (collider == null)
+                collider = piece.gameObject.AddComponent<BoxCollider>();
+
+            collider.enabled = true;
+        }
+    }
+
+
+
     // button interactivity status
     void SetButtonState(Button button, bool enabled)
     {
@@ -1734,8 +1993,37 @@ public class Chessboard : MonoBehaviour
         if (text != null) text.enabled = enabled;
     }
 
-    // aura functions
+    // Animations
+    // Graveyard animations
+    private void UpdateGraveyardBobbing()
+    {
+        // Animate both white and black graveyards
+        AnimateGraveyardBobbing(deadWhites);
+        AnimateGraveyardBobbing(deadBlacks);
+    }
 
+    private void AnimateGraveyardBobbing(List<ChessPiece> pieces)
+    {
+        
+        
+        foreach (ChessPiece piece in pieces)
+        {
+            // if you are not ressurecting, don't enable colliders
+            if (!isRessurecting)
+            {
+                var col = piece.GetComponent<Collider>();
+                if (col != null) col.enabled = false;
+            }
+
+
+            // Calculate the new y position using Mathf.PingPong for smooth oscillation
+            float bobbingY = Mathf.PingPong(Time.time * 0.04f, 0.1f) + 0.52f; // bob between 0.6 and 0.7
+            piece.transform.position = new Vector3(piece.transform.position.x, bobbingY, piece.transform.position.z);
+        }
+
+    }
+
+    // aura methods
     public void DeactivateTeleportButtonAuras()
 
     {
@@ -1763,7 +2051,6 @@ public class Chessboard : MonoBehaviour
             Debug.Log("Black teleport auras deactivated");
         }
     }
-
     IEnumerator PulseAura(GameObject aura)
     {
         Vector3 originalScale = aura.transform.localScale;
@@ -1801,7 +2088,7 @@ public class Chessboard : MonoBehaviour
         auraImage.color = originalColor;
     }
 
-    // camera swapping function
+    // camera swapping
     public void SwapCamera(bool isWhiteTurn)
     {
         StopAllCoroutines(); // Stop any existing camera transitions
@@ -1809,22 +2096,22 @@ public class Chessboard : MonoBehaviour
         StartCoroutine(AnimateCameraTransition(target));
     }
 
-    // camera animation
+    // camera swapping animation
     IEnumerator AnimateCameraTransition(Transform target)
     {
         // if a (freeze/teleport) has been used, wait a bit until doing transition
         if (abilityJustUsed)
         {
-            yield return new WaitForSeconds(1.7f);
+            yield return new WaitForSeconds(1.6f);
             abilityJustUsed = false;
         }
 
         else
         {
             // wait a little bit after any move
-            yield return new WaitForSeconds(0.7f);
+            yield return new WaitForSeconds(0.6f);
         }
-        
+
         Vector3 startPos = mainCamera.transform.position;
         Quaternion startRot = mainCamera.transform.rotation;
 
@@ -1890,7 +2177,6 @@ public class Chessboard : MonoBehaviour
             yield return null;
         }
     }
-
 
 
 }
